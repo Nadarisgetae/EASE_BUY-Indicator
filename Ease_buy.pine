@@ -1,0 +1,217 @@
+// ============================================================
+// SmartFlow Market Indicator v1.0
+// by Claude | TradingView Pine Script v5
+// 
+// COMPONENTS:
+//   • Volume Analysis (relative volume spike detection)
+//   • Liquidity Zones (support/resistance via pivot highs/lows)
+//   • Breakout Detection (price breaking key levels with volume)
+//   • RSI (14) with overbought/oversold zones
+//   • Triple MA (EMA 21 / EMA 50 / SMA 200) trend filter
+//
+// BUY SIGNAL  → All bullish conditions align
+// SELL SIGNAL → All bearish conditions align
+// ============================================================
+
+//@version=5
+indicator("SmartFlow Market Indicator", shorttitle="SmartFlow", overlay=true, max_bars_back=500)
+
+// ─────────────────────────────────────────────
+// ░░ INPUT SETTINGS ░░
+// ─────────────────────────────────────────────
+
+// --- MA Settings ---
+ma_fast_len   = input.int(21,  "Fast MA (EMA)",   group="Triple MA")
+ma_mid_len    = input.int(50,  "Mid MA (EMA)",    group="Triple MA")
+ma_slow_len   = input.int(200, "Slow MA (SMA)",   group="Triple MA")
+show_mas      = input.bool(true, "Show MAs",       group="Triple MA")
+
+// --- RSI Settings ---
+rsi_len       = input.int(14,  "RSI Length",       group="RSI")
+rsi_ob        = input.int(70,  "Overbought Level", group="RSI")
+rsi_os        = input.int(30,  "Oversold Level",   group="RSI")
+
+// --- Volume Settings ---
+vol_len       = input.int(20,  "Volume MA Length",            group="Volume")
+vol_mult      = input.float(1.5, "Volume Spike Multiplier",   group="Volume", step=0.1)
+
+// --- Breakout Settings ---
+pivot_len     = input.int(10,  "Pivot Lookback (bars)",       group="Breakout / Liquidity")
+show_liquidity = input.bool(true, "Show Liquidity Zones",     group="Breakout / Liquidity")
+
+// --- Signal Settings ---
+show_labels   = input.bool(true, "Show Buy/Sell Labels",      group="Signals")
+show_bg       = input.bool(true, "Show Signal Background",    group="Signals")
+alert_signals = input.bool(true, "Enable Alerts",             group="Signals")
+
+// ─────────────────────────────────────────────
+// ░░ TRIPLE MOVING AVERAGES ░░
+// ─────────────────────────────────────────────
+
+ema_fast = ta.ema(close, ma_fast_len)
+ema_mid  = ta.ema(close, ma_mid_len)
+sma_slow = ta.sma(close, ma_slow_len)
+
+bull_trend = ema_fast > ema_mid and ema_mid > sma_slow   // Full bullish alignment
+bear_trend = ema_fast < ema_mid and ema_mid < sma_slow   // Full bearish alignment
+
+plot(show_mas ? ema_fast : na, "EMA 21",  color=color.new(#00E5FF, 0),  linewidth=1)
+plot(show_mas ? ema_mid  : na, "EMA 50",  color=color.new(#FF9800, 0),  linewidth=1)
+plot(show_mas ? sma_slow : na, "SMA 200", color=color.new(#FF4081, 0),  linewidth=2)
+
+// ─────────────────────────────────────────────
+// ░░ RSI ░░
+// ─────────────────────────────────────────────
+
+rsi_val   = ta.rsi(close, rsi_len)
+rsi_bull  = rsi_val > 50 and rsi_val < rsi_ob   // RSI bullish: above 50 not overbought
+rsi_bear  = rsi_val < 50 and rsi_val > rsi_os   // RSI bearish: below 50 not oversold
+
+// ─────────────────────────────────────────────
+// ░░ VOLUME ANALYSIS ░░
+// ─────────────────────────────────────────────
+
+vol_ma    = ta.sma(volume, vol_len)
+vol_spike = volume > vol_ma * vol_mult   // High volume confirmation
+
+// Bullish = green candle + volume spike
+// Bearish = red candle + volume spike
+vol_bull  = vol_spike and close > open
+vol_bear  = vol_spike and close < open
+
+// ─────────────────────────────────────────────
+// ░░ LIQUIDITY ZONES (Pivot High / Low) ░░
+// ─────────────────────────────────────────────
+
+pivot_high = ta.pivothigh(high, pivot_len, pivot_len)
+pivot_low  = ta.pivotlow(low,  pivot_len, pivot_len)
+
+// Track last confirmed pivot levels
+var float last_ph = na
+var float last_pl = na
+
+if not na(pivot_high)
+    last_ph := pivot_high
+if not na(pivot_low)
+    last_pl := pivot_low
+
+// Plot liquidity zone lines
+plot(show_liquidity ? last_ph : na, "Liquidity High", 
+     color=color.new(#FF4081, 60), style=plot.style_stepline, linewidth=1)
+plot(show_liquidity ? last_pl : na, "Liquidity Low",  
+     color=color.new(#00E5FF, 60), style=plot.style_stepline, linewidth=1)
+
+// ─────────────────────────────────────────────
+// ░░ BREAKOUT DETECTION ░░
+// ─────────────────────────────────────────────
+
+// Breakout = close crosses and holds above/below pivot level with volume
+breakout_bull = not na(last_ph) and ta.crossover(close, last_ph) and vol_spike
+breakout_bear = not na(last_pl) and ta.crossunder(close, last_pl) and vol_spike
+
+// ─────────────────────────────────────────────
+// ░░ COMPOSITE SIGNAL ENGINE ░░
+// ─────────────────────────────────────────────
+
+// ✅ STRONG BUY: MA bullish + RSI bullish + Volume bull + Breakout UP
+strong_buy = bull_trend and rsi_bull and vol_bull and breakout_bull
+
+// ✅ STANDARD BUY: MA bullish + RSI bullish + Volume bull (no breakout needed)
+standard_buy = bull_trend and rsi_bull and vol_bull and not breakout_bear
+
+// 🔴 STRONG SELL: MA bearish + RSI bearish + Volume bear + Breakout DOWN
+strong_sell = bear_trend and rsi_bear and vol_bear and breakout_bear
+
+// 🔴 STANDARD SELL: MA bearish + RSI bearish + Volume bear
+standard_sell = bear_trend and rsi_bear and vol_bear and not breakout_bull
+
+// Final signals (avoid double-triggering)
+buy_signal  = (strong_buy or standard_buy) and not strong_sell
+sell_signal = (strong_sell or standard_sell) and not strong_buy
+
+// ─────────────────────────────────────────────
+// ░░ VISUAL SIGNALS ░░
+// ─────────────────────────────────────────────
+
+// Background highlight on signal bars
+bgcolor(show_bg and buy_signal  ? color.new(#00E5FF, 88) : na, title="Buy BG")
+bgcolor(show_bg and sell_signal ? color.new(#FF4081, 88) : na, title="Sell BG")
+
+// Buy / Sell arrows
+plotshape(show_labels and buy_signal,  title="BUY",  location=location.belowbar, 
+          style=shape.labelup,   color=#00E676, textcolor=color.white, 
+          text="BUY",  size=size.normal)
+
+plotshape(show_labels and sell_signal, title="SELL", location=location.abovebar, 
+          style=shape.labeldown, color=#FF1744, textcolor=color.white, 
+          text="SELL", size=size.normal)
+
+// Breakout markers (smaller, secondary)
+plotshape(breakout_bull and not buy_signal, title="Breakout Up",   
+          location=location.belowbar, style=shape.triangleup,   
+          color=color.new(#00E676, 30), size=size.tiny)
+plotshape(breakout_bear and not sell_signal, title="Breakout Down", 
+          location=location.abovebar, style=shape.triangledown,  
+          color=color.new(#FF1744, 30), size=size.tiny)
+
+// ─────────────────────────────────────────────
+// ░░ INFO TABLE (top-right HUD) ░░
+// ─────────────────────────────────────────────
+
+var table hud = table.new(position.top_right, 2, 7, 
+     bgcolor=color.new(#0D1117, 10), border_color=color.new(#30363D, 80), border_width=1, frame_color=color.new(#30363D,80), frame_width=1)
+
+// Helper: condition cell color
+condColor(cond) => cond ? color.new(#00E676, 20) : color.new(#FF1744, 20)
+condText(cond)  => cond ? "✓" : "✗"
+
+if barstate.islast
+    // Header
+    table.cell(hud, 0, 0, "SmartFlow HUD",  text_color=#C9D1D9, text_size=size.small, bgcolor=color.new(#161B22,0), text_halign=text.align_center)
+    table.cell(hud, 1, 0, "Status",         text_color=#C9D1D9, text_size=size.small, bgcolor=color.new(#161B22,0), text_halign=text.align_center)
+    // Rows
+    table.cell(hud, 0, 1, "📈 MA Trend",    text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 1, bull_trend ? "▲ Bullish" : bear_trend ? "▼ Bearish" : "→ Neutral",
+               text_color = bull_trend ? #00E676 : bear_trend ? #FF1744 : #8B949E, text_size=size.small,
+               bgcolor = condColor(bull_trend))
+
+    table.cell(hud, 0, 2, "📊 RSI (" + str.tostring(math.round(rsi_val, 1)) + ")", text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 2, condText(rsi_bull) + " " + (rsi_bull ? "Bullish" : rsi_bear ? "Bearish" : "Neutral"),
+               text_color = rsi_bull ? #00E676 : rsi_bear ? #FF1744 : #8B949E, text_size=size.small,
+               bgcolor = condColor(rsi_bull))
+
+    table.cell(hud, 0, 3, "🔊 Volume",      text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 3, vol_spike ? "⚡ Spike!" : "Normal",
+               text_color = vol_spike ? #FFD700 : #8B949E, text_size=size.small,
+               bgcolor = vol_spike ? color.new(#FFD700, 70) : color.new(#161B22,0))
+
+    table.cell(hud, 0, 4, "💧 Breakout",    text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 4, breakout_bull ? "▲ UP" : breakout_bear ? "▼ DOWN" : "—",
+               text_color = breakout_bull ? #00E676 : breakout_bear ? #FF1744 : #8B949E, text_size=size.small,
+               bgcolor = breakout_bull ? color.new(#00E676, 70) : breakout_bear ? color.new(#FF1744, 70) : color.new(#161B22,0))
+
+    table.cell(hud, 0, 5, "🎯 Signal",      text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 5, buy_signal ? "● BUY" : sell_signal ? "● SELL" : "⬤ WAIT",
+               text_color = buy_signal ? #00E676 : sell_signal ? #FF1744 : #8B949E,
+               text_size=size.small,
+               bgcolor = buy_signal ? color.new(#00E676, 40) : sell_signal ? color.new(#FF1744, 40) : color.new(#161B22,0))
+
+    // Strength row
+    bull_score = (bull_trend ? 1 : 0) + (rsi_bull ? 1 : 0) + (vol_bull ? 1 : 0) + (breakout_bull ? 1 : 0)
+    bear_score = (bear_trend ? 1 : 0) + (rsi_bear ? 1 : 0) + (vol_bear ? 1 : 0) + (breakout_bear ? 1 : 0)
+    score_str  = buy_signal ? str.tostring(bull_score) + "/4 Bull" : sell_signal ? str.tostring(bear_score) + "/4 Bear" : "—"
+    table.cell(hud, 0, 6, "💪 Strength",    text_color=#8B949E, text_size=size.small)
+    table.cell(hud, 1, 6, score_str,
+               text_color = buy_signal ? #00E676 : sell_signal ? #FF1744 : #8B949E, text_size=size.small)
+
+// ─────────────────────────────────────────────
+// ░░ ALERTS ░░
+// ─────────────────────────────────────────────
+
+alertcondition(buy_signal,  title="SmartFlow BUY Signal",  message="🟢 SmartFlow BUY — {{ticker}} {{interval}} | RSI: {{plot_0}}")
+alertcondition(sell_signal, title="SmartFlow SELL Signal", message="🔴 SmartFlow SELL — {{ticker}} {{interval}} | RSI: {{plot_0}}")
+alertcondition(breakout_bull, title="SmartFlow Breakout UP",   message="⚡ Breakout UP — {{ticker}} broke liquidity zone")
+alertcondition(breakout_bear, title="SmartFlow Breakout DOWN", message="⚡ Breakout DOWN — {{ticker}} broke liquidity zone")
+
+// Hidden RSI plot for alert reference
+plot(rsi_val, "RSI Value", display=display.none)
